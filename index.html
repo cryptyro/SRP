@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login Page</title>
+</head>
+<body>
+    <!-- Username Form -->
+    <div id="usernameForm">
+        <h2>Enter your username</h2>
+        <input type="text" id="usernameInput" placeholder="Username" required>
+        <button onclick="submitUsername()">Submit</button>
+    </div>
+
+    <!-- Password Form (Hidden initially) -->
+    <div id="passwordForm" style="display:none;">
+        <h2>Enter your password</h2>
+        <input type="password" id="passwordInput" placeholder="Password" required>
+        <button onclick="submitPassword()">Submit</button>
+    </div>
+
+    <script>
+        // Global parameters
+        const p = BigInt('0xffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327fffffffffffffffff');
+        const g = BigInt(2);
+        const k = BigInt(3);
+
+        // Store username, g^a % p, server response, and client result
+        let a ;
+        let A = '';
+        let serverResponse = '';
+        // let clientResult = '';
+
+        // Function to generate a random bigint
+        function generateRandomBigInt(bits) {
+            const randomValue = BigInt('0x' + crypto.getRandomValues(new Uint32Array(bits / 32)).reduce((acc, val) => acc + val.toString(16).padStart(8, '0'), ''));
+            return randomValue;
+        }
+
+
+        // Function to perform modular exponentiation (g^a) % p efficiently
+        function modExp(base, exponent, modulus) {
+            let result = BigInt(1);
+            base = base % modulus;
+
+            while (exponent > 0) {
+                if (exponent % BigInt(2) === BigInt(1)) {
+                    result = (result * base) % modulus;
+                }
+                exponent = exponent / BigInt(2);
+                base = (base * base) % modulus;
+            }
+            return result;
+        }
+
+        // Helper function to compute SHA-256 hash
+        async function computeHash(data) {
+            const encoder = new TextEncoder();
+            const encodedData = encoder.encode(data);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', encodedData);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            return hashHex;
+        }
+
+        // Function to handle username submission
+        async function submitUsername() {
+            const username = document.getElementById('usernameInput').value;
+            if (username) {
+                // Generate random a and compute (g^a) % p
+                a = generateRandomBigInt(1536) % p; 
+                A = modExp(g, a, p).toString();
+                try {
+                    const response = await fetch('/submitUsername', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            username: username,
+                            client_pk: A
+                        }),
+                    });
+                    console.log('Sent to server:',A);
+                    serverResponse = await response.json();
+                    
+                    // Hide username form, show password form
+                    document.getElementById('usernameForm').style.display = 'none';
+                    document.getElementById('passwordForm').style.display = 'block';
+                } catch (error) {
+                    console.error('Error while submitting username:', error);
+                }
+            } else {
+                alert('Please enter a username');
+            }
+        }
+
+        // Function to handle password submission with clientResult
+        async function submitPassword() {
+            const password = document.getElementById('passwordInput').value;
+            if (password) {
+                if (serverResponse === '') {
+                    alert('Server response is missing. Please try again.');
+                    return;
+                }
+
+                const salt = serverResponse.salt;
+                const B = serverResponse.server_pk;
+                const u = await computeHash(A+B);
+                const x = await computeHash(salt+password);
+
+                let temp = modExp(g, BigInt('0x' + x), p);
+                let exp = BigInt(a) + BigInt('0x' + u) * BigInt('0x' + x);
+                let base = BigInt(B) - (k*temp);
+                if (base < 0) {
+                    base += p;
+                }
+                let S = modExp(base, exp, p);
+                let K1 = S.toString();
+                let session_key = await computeHash(K1);
+                let M1 = await computeHash(A+B+session_key);
+
+                console.log('Session parameter is:',K1);
+                console.log('server_public key is:',B);
+                console.log('session key is:',session_key);
+                
+
+                try{
+                    const response = await fetch('/submitPassword', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({proof: M1})
+                    });
+                    // Check if the response is ok
+                    if (response.ok) {
+                        // Parse the JSON response
+                        let serverResponse = await response.json();
+
+                        // Access the message
+                        let message = serverResponse.message;
+
+                        // Display the message in the browser
+                        let messageElement = document.getElementById('messageDisplay');
+                        messageElement.textContent = message;
+                    } else {
+                        console.error("Error fetching the message:", response.status);
+                    }
+                } catch (error) {
+                    console.error('Error while submitting password::', error);
+                }
+            } else {
+                alert('Please enter a password');
+            }
+        }
+    </script>
+</body>
+</html>
